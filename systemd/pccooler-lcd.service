@@ -1,0 +1,13 @@
+[Unit]
+Description=PCCooler LCD Manager
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=QT_QPA_PLATFORM=offscreen
+ExecStart=/usr/bin/python3 %h/.local/share/pccooler-lcd/display_worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.backup
+*.backup-*
+*.before-*
+*.qt6-test-backup
+*.mp4
+recovered-backgrounds/
+original-source/
+tools/
+.env
+.venv/
+*.log

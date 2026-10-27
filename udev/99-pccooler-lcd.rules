@@ -1,0 +1,7 @@
+# PCCooler LCD Manager
+# CP3 Inc. USB HID LCD
+#
+# VID: 1D6B
+# PID: 0112
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0112", ATTRS{manufacturer}=="CP3 Inc.", MODE="0660", TAG+="uaccess"
