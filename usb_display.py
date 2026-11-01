@@ -2,10 +2,7 @@
 """
 PCCooler LCD USB transport v2.
 
-Uses the independently reconstructed CP3 HID protocol.
-
-This development version supports offline packet generation.
-USB transmission will be enabled after validation.
+Uses the independently reconstructed CP3 HID protocol for packet generation and USB HID transmission.
 """
 
 import time
