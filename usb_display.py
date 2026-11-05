@@ -2,7 +2,8 @@
 """
 PCCooler LCD USB transport v2.
 
-Uses the independently reconstructed CP3 HID protocol for packet generation and USB HID transmission.
+Keeps one HID connection open and reuses it for OSD frames,
+background uploads, and wake commands.
 """
 
 import time
@@ -23,6 +24,76 @@ MAX_FILE_SIZE = 65535 * 1000
 
 class USBDisplayError(Exception):
     pass
+
+
+_device = None
+_transfer_id = 0
+_sequence_number = 100
+
+
+def _get_device():
+    """Return the shared HID device, opening it only when necessary."""
+    global _device
+
+    if _device is None:
+        device = hid.device()
+        try:
+            device.open(VID, PID)
+        except Exception:
+            try:
+                device.close()
+            except Exception:
+                pass
+            raise
+        _device = device
+
+    return _device
+
+
+def _disconnect():
+    """Close and forget the shared HID handle."""
+    global _device
+
+    device = _device
+    _device = None
+
+    if device is not None:
+        try:
+            device.close()
+        except Exception:
+            pass
+
+
+def close_display():
+    """Close the persistent HID connection during worker shutdown."""
+    _disconnect()
+
+
+def _write_packets(packets):
+    """Write packets through the shared connection."""
+    try:
+        device = _get_device()
+
+        for index, packet in enumerate(packets):
+            if len(packet) > 1025:
+                raise USBDisplayError(
+                    f"Packet {index} exceeds HID report size"
+                )
+
+            written = device.write(packet)
+
+            if written != len(packet):
+                raise USBDisplayError(
+                    f"Short HID write: packet {index}, "
+                    f"{written}/{len(packet)} bytes"
+                )
+
+            time.sleep(0.02)
+
+    except Exception:
+        # A failed handle is discarded; the next operation can reopen it.
+        _disconnect()
+        raise
 
 
 def prepare_image(
@@ -49,10 +120,9 @@ def prepare_image(
         raise USBDisplayError("Image exceeds protocol size limit")
 
     timestamp = int(time.time() * 1000)
-
     filename = f"{timestamp}.osd"
 
-    packets = build_transfer(
+    return build_transfer(
         data=png,
         filename=filename,
         transfer_id=transfer_id,
@@ -62,18 +132,9 @@ def prepare_image(
         media_type=MEDIA_OSD,
     )
 
-    return packets
-
-
-_transfer_id = 0
-_sequence_number = 100
-
 
 def send_image(png):
-    """
-    Send a transparent OSD PNG using CP3 Protocol v2.
-    """
-
+    """Send a transparent OSD PNG using CP3 Protocol v2."""
     global _transfer_id, _sequence_number
 
     packets = prepare_image(
@@ -82,29 +143,7 @@ def send_image(png):
         sequence_number=_sequence_number,
     )
 
-    device = hid.device()
-
-    try:
-        device.open(VID, PID)
-
-        for index, packet in enumerate(packets):
-            if len(packet) > 1025:
-                raise USBDisplayError(
-                    f"Packet {index} exceeds HID report size"
-                )
-
-            written = device.write(packet)
-
-            if written != len(packet):
-                raise USBDisplayError(
-                    f"Short HID write: packet {index}, "
-                    f"{written}/{len(packet)} bytes"
-                )
-
-            time.sleep(0.02)
-
-    finally:
-        device.close()
+    _write_packets(packets)
 
     _transfer_id = (_transfer_id + 1) % 60
     _sequence_number += 2
@@ -115,7 +154,6 @@ def send_background(path):
     Upload an MP4 background using CP3 Protocol v2.
 
     WARNING: Replaces the current background on the LCD.
-    Do not call while another process owns the HID device.
     """
 
     global _transfer_id, _sequence_number
@@ -126,9 +164,7 @@ def send_background(path):
         raise FileNotFoundError(path)
 
     if path.suffix.lower() not in (".png", ".mp4"):
-        raise USBDisplayError(
-            "Background must be a PNG or MP4 file"
-        )
+        raise USBDisplayError("Background must be a PNG or MP4 file")
 
     data = path.read_bytes()
 
@@ -150,29 +186,7 @@ def send_background(path):
         media_type=MEDIA_BACKGROUND,
     )
 
-    device = hid.device()
-
-    try:
-        device.open(VID, PID)
-
-        for index, packet in enumerate(packets):
-            if len(packet) > 1025:
-                raise USBDisplayError(
-                    f"Packet {index} exceeds HID report size"
-                )
-
-            written = device.write(packet)
-
-            if written != len(packet):
-                raise USBDisplayError(
-                    f"Short HID write: packet {index}, "
-                    f"{written}/{len(packet)} bytes"
-                )
-
-            time.sleep(0.02)
-
-    finally:
-        device.close()
+    _write_packets(packets)
 
     _transfer_id = (_transfer_id + 1) % 60
     _sequence_number += 2
@@ -180,35 +194,8 @@ def send_background(path):
     return len(data)
 
 
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) != 2:
-        print("Usage: python3 usb_display.py image.png")
-        sys.exit(1)
-
-    path = Path(sys.argv[1])
-    png = path.read_bytes()
-
-    packets = prepare_image(png)
-
-    print("PCCooler USB Protocol v2")
-    print("File:", path)
-    print("Size:", len(png), "bytes")
-    print("HID packets:", len(packets))
-    print("Binary packets:", len(packets) - 2)
-    print("First packet:", len(packets[0]), "bytes")
-    print("Last packet:", len(packets[-1]), "bytes")
-    print("USB communication: DISABLED")
-
-
 def wake_display():
-    """
-    Initialize and wake the LCD controller.
-
-    Reconstructed from the original CP3 startup sequence.
-    """
-
+    """Initialize and wake the LCD controller."""
     timestamp = int(time.time() * 1000)
 
     packets = [
@@ -231,23 +218,26 @@ def wake_display():
         ),
     ]
 
-    device = hid.device()
-
-    try:
-        device.open(VID, PID)
-
-        for packet in packets:
-            written = device.write(packet)
-
-            if written != len(packet):
-                raise USBDisplayError(
-                    f"Wake command short write: "
-                    f"{written}/{len(packet)}"
-                )
-
-            time.sleep(0.5)
-
-    finally:
-        device.close()
-
+    _write_packets(packets)
     print("PCCooler LCD awakened", flush=True)
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 2:
+        print("Usage: python3 usb_display.py image.png")
+        sys.exit(1)
+
+    path = Path(sys.argv[1])
+    png = path.read_bytes()
+    packets = prepare_image(png)
+
+    print("PCCooler USB Protocol v2")
+    print("File:", path)
+    print("Size:", len(png), "bytes")
+    print("HID packets:", len(packets))
+    print("Binary packets:", len(packets) - 2)
+    print("First packet:", len(packets[0]), "bytes")
+    print("Last packet:", len(packets[-1]), "bytes")
+    print("USB communication: DISABLED")
